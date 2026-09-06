@@ -7,7 +7,7 @@
     "node": ">=22.20.0"
   },
   "scripts": {
-    "check": "node --check src/registry.js && node --check src/node-protocol.js && node --test",
+    "check": "node --check src/registry.js && node --check src/node-protocol.js && node --check src/node-agent.js && node --test",
     "test": "node --test"
   }
 }
