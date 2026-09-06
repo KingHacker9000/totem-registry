@@ -33,8 +33,9 @@ test("registry index signs and verifies with an explicitly trusted Ed25519 key",
   const trusted = { "release-1": publicKey.export({ type: "spki", format: "pem" }) };
   assert.deepEqual(verifySignedRegistry(signed, trusted), { ok: true });
   assert.deepEqual(verifySignedRegistry(signed, {}), { ok: false, reason: "untrusted_key" });
-  signed.index.packages[0].version = "9.9.9";
-  assert.deepEqual(verifySignedRegistry(signed, trusted), { ok: false, reason: "invalid_signature" });
+  const tampered = structuredClone(signed);
+  tampered.index.packages[0].version = "9.9.9";
+  assert.deepEqual(verifySignedRegistry(tampered, trusted), { ok: false, reason: "invalid_signature" });
 });
 
 test("artifact integrity and install planning never auto-grant permissions", () => {
