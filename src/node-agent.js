@@ -6,6 +6,7 @@ const DEFAULT_HANDLER_TIMEOUT_MS = 5_000;
 const DEFAULT_SERVER_MAX_RESPONSE_BYTES = 64 * 1024;
 const DEFAULT_CLIENT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLIENT_MAX_RESPONSE_BYTES = 64 * 1024;
+const MAX_CLIENT_REQUEST_BODY_BYTES = MAX_REQUEST_BODY_BYTES;
 
 class RequestError extends Error {
   constructor(status, code) {
@@ -157,6 +158,19 @@ function clientError(code, message, status) {
   return error;
 }
 
+function serializeClientRequestJson(body) {
+  let payload;
+  try {
+    payload = JSON.stringify(body);
+  } catch {
+    throw clientError("node_agent_request_invalid", "node agent request contains invalid JSON");
+  }
+  if (Buffer.byteLength(payload) > MAX_CLIENT_REQUEST_BODY_BYTES) {
+    throw clientError("node_agent_request_too_large", "node agent request exceeds size limit");
+  }
+  return payload;
+}
+
 function isJsonContentType(response) {
   const contentType = response.headers.get("content-type");
   return typeof contentType === "string" && contentType.split(";", 1)[0].trim().toLowerCase() === "application/json";
@@ -262,11 +276,12 @@ export class NodeAgentClient {
     return this.#json("/descriptor");
   }
 
-  invoke(capability, input = {}) {
+  async invoke(capability, input = {}) {
+    const body = serializeClientRequestJson({ capability, input });
     return this.#json("/invoke", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ capability, input }),
+      body,
     });
   }
 }

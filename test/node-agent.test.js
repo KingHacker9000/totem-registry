@@ -288,3 +288,45 @@ test("node agent client preserves structured HTTP error status and code", async 
     return true;
   });
 });
+
+test("node agent client rejects oversized invoke requests before transport", async () => {
+  let fetchCalls = 0;
+  const client = new NodeAgentClient("http://127.0.0.1:1", {
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("fetch should not be called");
+    },
+  });
+
+  await assert.rejects(client.invoke("host.echo", { value: "x".repeat(70 * 1024) }), (error) => {
+    assert.equal(error.code, "node_agent_request_too_large");
+    assert.equal(error.status, undefined);
+    assert.equal(error.message, "node agent request exceeds size limit");
+    return true;
+  });
+  assert.equal(fetchCalls, 0);
+});
+
+test("node agent client normalizes unserializable invoke requests before transport", async () => {
+  let fetchCalls = 0;
+  const client = new NodeAgentClient("http://127.0.0.1:1", {
+    fetchImpl: async () => {
+      fetchCalls += 1;
+      throw new Error("fetch should not be called");
+    },
+  });
+  const circular = {};
+  circular.self = circular;
+
+  for (const input of [circular, { value: 1n }]) {
+    await assert.rejects(client.invoke("host.echo", input), (error) => {
+      assert.equal(error.code, "node_agent_request_invalid");
+      assert.equal(error.status, undefined);
+      assert.equal(error.message, "node agent request contains invalid JSON");
+      assert.equal(error.message.includes("circular"), false);
+      assert.equal(error.message.includes("BigInt"), false);
+      return true;
+    });
+  }
+  assert.equal(fetchCalls, 0);
+});
