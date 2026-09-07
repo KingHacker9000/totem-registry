@@ -2,6 +2,8 @@ import http from "node:http";
 import { createNodeDescriptor } from "./node-protocol.js";
 
 const MAX_REQUEST_BODY_BYTES = 64 * 1024;
+const DEFAULT_CLIENT_TIMEOUT_MS = 5_000;
+const DEFAULT_CLIENT_MAX_RESPONSE_BYTES = 64 * 1024;
 
 class RequestError extends Error {
   constructor(status, code) {
@@ -99,20 +101,100 @@ export async function closeNodeAgent(server) {
   await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 }
 
-export class NodeAgentClient {
-  constructor(baseUrl, { fetchImpl = fetch } = {}) {
-    this.baseUrl = new URL(baseUrl);
-    this.fetch = fetchImpl;
+function clientError(code, message, status) {
+  const error = new Error(message);
+  error.code = code;
+  if (status !== undefined) error.status = status;
+  return error;
+}
+
+function isJsonContentType(response) {
+  const contentType = response.headers.get("content-type");
+  return typeof contentType === "string" && contentType.split(";", 1)[0].trim().toLowerCase() === "application/json";
+}
+
+async function readBoundedResponseJson(response, maxResponseBytes) {
+  if (!isJsonContentType(response)) {
+    throw clientError(
+      "node_agent_unsupported_media_type",
+      "node agent response is not application/json",
+      response.status,
+    );
   }
 
-  async #json(path, init) {
-    const response = await this.fetch(new URL(path, this.baseUrl), init);
-    const body = await response.json();
+  const declaredLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxResponseBytes) {
+    throw clientError("node_agent_response_too_large", "node agent response exceeds size limit", response.status);
+  }
+
+  const chunks = [];
+  let size = 0;
+  if (response.body) {
+    for await (const chunk of response.body) {
+      const bytes = Buffer.from(chunk);
+      size += bytes.length;
+      if (size > maxResponseBytes) {
+        throw clientError("node_agent_response_too_large", "node agent response exceeds size limit", response.status);
+      }
+      chunks.push(bytes);
+    }
+  }
+
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw clientError("node_agent_invalid_json", "node agent response contains invalid JSON", response.status);
+  }
+}
+
+export class NodeAgentClient {
+  constructor(
+    baseUrl,
+    {
+      fetchImpl = fetch,
+      timeoutMs = DEFAULT_CLIENT_TIMEOUT_MS,
+      maxResponseBytes = DEFAULT_CLIENT_MAX_RESPONSE_BYTES,
+    } = {},
+  ) {
+    this.baseUrl = new URL(baseUrl);
+    this.fetch = fetchImpl;
+    this.timeoutMs = timeoutMs;
+    this.maxResponseBytes = maxResponseBytes;
+  }
+
+  async #json(path, init = {}) {
+    const controller = new AbortController();
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(clientError("node_agent_timeout", "node agent request timed out"));
+      }, this.timeoutMs);
+    });
+
+    let response;
+    try {
+      response = await Promise.race([
+        this.fetch(new URL(path, this.baseUrl), { ...init, signal: controller.signal }),
+        timeout,
+      ]);
+    } catch (error) {
+      if (error?.code === "node_agent_timeout") throw error;
+      throw clientError("node_agent_transport_error", "node agent request failed");
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const body = await readBoundedResponseJson(response, this.maxResponseBytes);
     if (!response.ok) {
-      const error = new Error(body.message ?? body.error ?? `node agent request failed with ${response.status}`);
-      error.status = response.status;
-      error.code = body.error ?? "node_agent_request_failed";
-      throw error;
+      const message =
+        typeof body?.message === "string"
+          ? body.message
+          : typeof body?.error === "string"
+            ? body.error
+            : `node agent request failed with ${response.status}`;
+      const code = typeof body?.error === "string" ? body.error : "node_agent_request_failed";
+      throw clientError(code, message, response.status);
     }
     return body;
   }
