@@ -8,16 +8,26 @@ The registry remains deliberately separate from core. Totem must continue to sup
 
 ### Registry index
 
-`src/registry.js` implements the `totem.registry/v0` index for extensions, themes, agent providers, and future node plugins. Every package version records an immutable artifact source plus SHA-256 digest, compatibility metadata, and requested permissions.
+`src/registry.js` implements the `totem.registry/v0` index for extensions, themes, agent providers, and future node plugins. Every package version records an immutable HTTPS artifact source plus SHA-256 digest, compatibility metadata, and requested permissions.
+
+The v0 registry boundary fails closed on ambiguous metadata rather than silently normalizing it:
+
+- `generatedAt` is an RFC 3339 UTC timestamp using the canonical `Z` form;
+- package sources are absolute HTTPS URLs without embedded credentials or fragments;
+- package and compatibility objects contain only fields defined by the public v0 contract;
+- requested and already-granted permission arrays contain unique, non-empty strings;
+- validated package/index structures are copied and frozen before signing or install planning;
+- rollback records are validated for package identity and version consistency before application.
 
 The helper APIs deliberately separate **discovery** from **authorization**:
 
 - `createRegistryIndex()` validates and deterministically orders metadata.
-- `signRegistryIndex()` signs the canonical index with Ed25519.
-- `verifySignedRegistry()` accepts signatures only from explicitly configured trusted keys.
-- `verifyArtifact()` validates artifact bytes against their declared SHA-256 digest.
+- `validateRegistryIndex()` applies the same semantic checks to externally supplied indexes.
+- `signRegistryIndex()` revalidates metadata before signing the canonical index with Ed25519.
+- `verifySignedRegistry()` accepts signatures only from explicitly configured trusted keys and rejects malformed signed index metadata.
+- `verifyArtifact()` validates artifact bytes against a well-formed declared SHA-256 digest.
 - `planInstall()` reports missing requested permissions and always returns `autoGrant: false`.
-- `createRollbackRecord()` / `applyRollback()` preserve the exact previous package metadata needed for deterministic rollback.
+- `createRollbackRecord()` / `validateRollbackRecord()` / `applyRollback()` preserve and verify the package identity needed for deterministic rollback.
 
 This repository does not host package bytes and does not grant Totem permissions. Core's local permission model remains authoritative.
 
