@@ -5,6 +5,7 @@ const MAX_REQUEST_BODY_BYTES = 64 * 1024;
 const DEFAULT_REQUEST_BODY_TIMEOUT_MS = 5_000;
 const DEFAULT_HANDLER_TIMEOUT_MS = 5_000;
 const DEFAULT_SERVER_MAX_RESPONSE_BYTES = 64 * 1024;
+const DEFAULT_MAX_CONCURRENT_INVOCATIONS = 8;
 const DEFAULT_CLIENT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLIENT_MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_CLIENT_REQUEST_BODY_BYTES = MAX_REQUEST_BODY_BYTES;
@@ -116,6 +117,11 @@ function requirePositiveLimit(value, name) {
   return value;
 }
 
+function requirePositiveInteger(value, name) {
+  if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError(`${name} must be a positive safe integer`);
+  return value;
+}
+
 function requireListenerHost(host) {
   if (typeof host !== "string" || host.trim() === "" || host !== host.trim()) {
     throw new TypeError("host must be a non-empty trimmed string");
@@ -168,12 +174,15 @@ export function createNodeAgent({
   requestBodyTimeoutMs = DEFAULT_REQUEST_BODY_TIMEOUT_MS,
   handlerTimeoutMs = DEFAULT_HANDLER_TIMEOUT_MS,
   maxResponseBytes = DEFAULT_SERVER_MAX_RESPONSE_BYTES,
+  maxConcurrentInvocations = DEFAULT_MAX_CONCURRENT_INVOCATIONS,
 }) {
   const node = createNodeDescriptor(descriptor);
   const capabilities = new Map(Object.entries(handlers));
   const bodyTimeoutMs = requirePositiveLimit(requestBodyTimeoutMs, "requestBodyTimeoutMs");
   const executionTimeoutMs = requirePositiveLimit(handlerTimeoutMs, "handlerTimeoutMs");
   const responseByteLimit = requirePositiveLimit(maxResponseBytes, "maxResponseBytes");
+  const invocationLimit = requirePositiveInteger(maxConcurrentInvocations, "maxConcurrentInvocations");
+  let activeInvocations = 0;
 
   return http.createServer(async (request, reply) => {
     try {
@@ -196,12 +205,25 @@ export function createNodeAgent({
         if (!handler) {
           return json(reply, 501, { error: "capability_not_implemented" });
         }
-        const result = await invokeWithDeadline(handler, body.input ?? {}, node, executionTimeoutMs);
-        return json(reply, 200, { nodeId: node.id, capability: body.capability, result }, {
-          maxBytes: responseByteLimit,
-          invalidCode: "capability_output_invalid",
-          tooLargeCode: "capability_output_too_large",
-        });
+        if (activeInvocations >= invocationLimit) {
+          return json(reply, 503, { error: "capability_overloaded" });
+        }
+        activeInvocations += 1;
+        try {
+          const result = await invokeWithDeadline(handler, body.input ?? {}, node, executionTimeoutMs);
+          return json(
+            reply,
+            200,
+            { nodeId: node.id, capability: body.capability, result },
+            {
+              maxBytes: responseByteLimit,
+              invalidCode: "capability_output_invalid",
+              tooLargeCode: "capability_output_too_large",
+            },
+          );
+        } finally {
+          activeInvocations -= 1;
+        }
       }
       return json(reply, 404, { error: "not_found" });
     } catch (error) {
