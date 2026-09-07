@@ -14,16 +14,19 @@ async function withAgent(fn) {
       name: "Desk PC",
       platform: "win32",
       arch: "x64",
-      capabilities: ["host.echo", "host.unimplemented"],
+      capabilities: ["host.echo", "host.fail", "host.unimplemented"],
       tags: ["office"],
     },
     handlers: {
       "host.echo": async (input) => ({ echoed: input.value ?? null }),
+      "host.fail": async () => {
+        throw new Error("private handler detail");
+      },
     },
   });
   const binding = await listenNodeAgent(server);
   try {
-    await fn(new NodeAgentClient(binding.url));
+    await fn(new NodeAgentClient(binding.url), binding);
   } finally {
     await closeNodeAgent(server);
   }
@@ -35,7 +38,7 @@ test("node agent exposes health and descriptor", async () => {
     const descriptor = await client.descriptor();
     assert.equal(descriptor.schema, "totem.node/v0");
     assert.equal(descriptor.id, "node-win-1");
-    assert.deepEqual(descriptor.capabilities, ["host.echo", "host.unimplemented"]);
+    assert.deepEqual(descriptor.capabilities, ["host.echo", "host.fail", "host.unimplemented"]);
   });
 });
 
@@ -58,5 +61,47 @@ test("node agent invokes only advertised and implemented capabilities", async ()
       assert.equal(error.code, "capability_not_implemented");
       return true;
     });
+  });
+});
+
+test("node agent fails closed on malformed invoke transport", async () => {
+  await withAgent(async (_client, binding) => {
+    const wrongType = await fetch(`${binding.url}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "{}",
+    });
+    assert.equal(wrongType.status, 415);
+    assert.deepEqual(await wrongType.json(), { error: "unsupported_media_type" });
+
+    const malformed = await fetch(`${binding.url}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json; charset=utf-8" },
+      body: "{",
+    });
+    assert.equal(malformed.status, 400);
+    assert.deepEqual(await malformed.json(), { error: "invalid_json" });
+
+    const oversized = await fetch(`${binding.url}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ capability: "host.echo", input: { value: "x".repeat(70 * 1024) } }),
+    });
+    assert.equal(oversized.status, 413);
+    assert.deepEqual(await oversized.json(), { error: "request_too_large" });
+  });
+});
+
+test("node agent does not expose internal handler exception details", async () => {
+  await withAgent(async (_client, binding) => {
+    const response = await fetch(`${binding.url}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ capability: "host.fail", input: {} }),
+    });
+    assert.equal(response.status, 500);
+    const body = await response.json();
+    assert.deepEqual(body, { error: "node_agent_error" });
+    assert.equal(JSON.stringify(body).includes("private handler detail"), false);
   });
 });
