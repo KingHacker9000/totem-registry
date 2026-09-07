@@ -30,6 +30,18 @@ test("node descriptors normalize capabilities and support deterministic routing"
   assert.equal(routeWorkflow([mac, linux], ["filesystem"]).id, "linux-a");
 });
 
+test("node descriptors fail closed on ambiguous state and unsafe metadata", () => {
+  const base = { id: "node-1", name: "Desk", platform: "linux", arch: "x64" };
+  assert.throws(() => createNodeDescriptor({ ...base, online: "false" }), /online must be a boolean/);
+  assert.throws(() => createNodeDescriptor({ ...base, lastSeenAt: "yesterday" }), /ISO-8601 UTC timestamp/);
+  assert.throws(() => createNodeDescriptor({ ...base, metadata: [] }), /metadata must be an object/);
+  assert.throws(() => createNodeDescriptor({ ...base, metadata: { load: Number.NaN } }), /finite JSON values/);
+
+  const cyclic = {};
+  cyclic.self = cyclic;
+  assert.throws(() => createNodeDescriptor({ ...base, metadata: cyclic }), /circular references/);
+});
+
 test("node lifecycle reduces registration heartbeat and offline events", () => {
   const registered = createNodeEnvelope({
     id: "evt-1",
@@ -57,4 +69,18 @@ test("node lifecycle reduces registration heartbeat and offline events", () => {
     payload: {},
   });
   assert.equal(reduceNodeState(live, offline).online, false);
+});
+
+test("node envelopes reject unsupported lifecycle events and malformed timestamps or payloads", () => {
+  const base = { id: "evt-1", nodeId: "node-1", occurredAt: "2026-09-06T12:00:00Z", payload: {} };
+  assert.throws(() => createNodeEnvelope({ ...base, type: "node.deleted" }), /unsupported node event type/);
+  assert.throws(
+    () => createNodeEnvelope({ ...base, type: "node.heartbeat", occurredAt: "2026-09-06 12:00:00" }),
+    /ISO-8601 UTC timestamp/,
+  );
+  assert.throws(() => createNodeEnvelope({ ...base, type: "node.heartbeat", payload: [] }), /payload must be an object/);
+  assert.throws(
+    () => createNodeEnvelope({ ...base, type: "node.heartbeat", payload: { metric: undefined } }),
+    /payload.metric must contain only finite JSON values/,
+  );
 });
