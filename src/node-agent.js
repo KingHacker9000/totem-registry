@@ -172,31 +172,37 @@ export class NodeAgentClient {
       }, this.timeoutMs);
     });
 
-    let response;
     try {
-      response = await Promise.race([
-        this.fetch(new URL(path, this.baseUrl), { ...init, signal: controller.signal }),
-        timeout,
-      ]);
+      const request = (async () => {
+        const response = await this.fetch(new URL(path, this.baseUrl), {
+          ...init,
+          signal: controller.signal,
+        });
+        const body = await readBoundedResponseJson(response, this.maxResponseBytes);
+        return { response, body };
+      })();
+
+      const { response, body } = await Promise.race([request, timeout]);
+      if (!response.ok) {
+        const message =
+          typeof body?.message === "string"
+            ? body.message
+            : typeof body?.error === "string"
+              ? body.error
+              : `node agent request failed with ${response.status}`;
+        const code = typeof body?.error === "string" ? body.error : "node_agent_request_failed";
+        throw clientError(code, message, response.status);
+      }
+      return body;
     } catch (error) {
-      if (error?.code === "node_agent_timeout") throw error;
+      if (error?.code?.startsWith?.("node_agent_") || typeof error?.status === "number") throw error;
+      if (controller.signal.aborted) {
+        throw clientError("node_agent_timeout", "node agent request timed out");
+      }
       throw clientError("node_agent_transport_error", "node agent request failed");
     } finally {
       clearTimeout(timer);
     }
-
-    const body = await readBoundedResponseJson(response, this.maxResponseBytes);
-    if (!response.ok) {
-      const message =
-        typeof body?.message === "string"
-          ? body.message
-          : typeof body?.error === "string"
-            ? body.error
-            : `node agent request failed with ${response.status}`;
-      const code = typeof body?.error === "string" ? body.error : "node_agent_request_failed";
-      throw clientError(code, message, response.status);
-    }
-    return body;
   }
 
   health() {
