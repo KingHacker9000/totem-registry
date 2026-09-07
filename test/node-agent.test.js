@@ -106,6 +106,121 @@ test("node agent does not expose internal handler exception details", async () =
   });
 });
 
+test("node agent bounds capability execution time and exposes cooperative abort", async () => {
+  let observedAbort = false;
+  const server = createNodeAgent({
+    descriptor: {
+      id: "node-timeout-1",
+      name: "Timeout node",
+      platform: "linux",
+      arch: "x64",
+      capabilities: ["host.slow"],
+    },
+    handlerTimeoutMs: 20,
+    handlers: {
+      "host.slow": async (_input, { signal }) =>
+        new Promise((resolve) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              observedAbort = true;
+              resolve({ late: true });
+            },
+            { once: true },
+          );
+        }),
+    },
+  });
+  const binding = await listenNodeAgent(server);
+  try {
+    const response = await fetch(`${binding.url}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ capability: "host.slow", input: {} }),
+    });
+    assert.equal(response.status, 504);
+    assert.deepEqual(await response.json(), { error: "capability_timeout" });
+    assert.equal(observedAbort, true);
+  } finally {
+    await closeNodeAgent(server);
+  }
+});
+
+test("node agent rejects oversized handler output with a stable error", async () => {
+  const server = createNodeAgent({
+    descriptor: {
+      id: "node-output-1",
+      name: "Output node",
+      platform: "linux",
+      arch: "x64",
+      capabilities: ["host.large"],
+    },
+    maxResponseBytes: 128,
+    handlers: {
+      "host.large": async () => ({ value: "x".repeat(512) }),
+    },
+  });
+  const binding = await listenNodeAgent(server);
+  try {
+    const response = await fetch(`${binding.url}/invoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ capability: "host.large", input: {} }),
+    });
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), { error: "capability_output_too_large" });
+  } finally {
+    await closeNodeAgent(server);
+  }
+});
+
+test("node agent rejects unserializable handler output without leaking details", async () => {
+  const circular = {};
+  circular.self = circular;
+  const server = createNodeAgent({
+    descriptor: {
+      id: "node-invalid-output-1",
+      name: "Invalid output node",
+      platform: "linux",
+      arch: "x64",
+      capabilities: ["host.circular", "host.bigint"],
+    },
+    handlers: {
+      "host.circular": async () => circular,
+      "host.bigint": async () => ({ secret: 1n }),
+    },
+  });
+  const binding = await listenNodeAgent(server);
+  try {
+    for (const capability of ["host.circular", "host.bigint"]) {
+      const response = await fetch(`${binding.url}/invoke`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ capability, input: {} }),
+      });
+      assert.equal(response.status, 500);
+      const body = await response.json();
+      assert.deepEqual(body, { error: "capability_output_invalid" });
+      assert.equal(JSON.stringify(body).includes("circular"), false);
+      assert.equal(JSON.stringify(body).includes("BigInt"), false);
+    }
+  } finally {
+    await closeNodeAgent(server);
+  }
+});
+
+test("node agent rejects invalid execution and response limits at construction", () => {
+  const descriptor = {
+    id: "node-config-1",
+    name: "Config node",
+    platform: "linux",
+    arch: "x64",
+    capabilities: [],
+  };
+  assert.throws(() => createNodeAgent({ descriptor, handlerTimeoutMs: 0 }), /handlerTimeoutMs/);
+  assert.throws(() => createNodeAgent({ descriptor, maxResponseBytes: Number.POSITIVE_INFINITY }), /maxResponseBytes/);
+});
+
 test("node agent client times out deterministically", async () => {
   const client = new NodeAgentClient("http://127.0.0.1:1", {
     fetchImpl: async () => new Promise(() => {}),
