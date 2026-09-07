@@ -1,6 +1,16 @@
 import http from "node:http";
 import { createNodeDescriptor } from "./node-protocol.js";
 
+const MAX_REQUEST_BODY_BYTES = 64 * 1024;
+
+class RequestError extends Error {
+  constructor(status, code) {
+    super(code);
+    this.status = status;
+    this.code = code;
+  }
+}
+
 function json(reply, statusCode, body) {
   const payload = JSON.stringify(body);
   reply.writeHead(statusCode, {
@@ -10,11 +20,32 @@ function json(reply, statusCode, body) {
   reply.end(payload);
 }
 
+function requireJsonContentType(request) {
+  const contentType = request.headers["content-type"];
+  if (typeof contentType !== "string" || contentType.split(";", 1)[0].trim().toLowerCase() !== "application/json") {
+    throw new RequestError(415, "unsupported_media_type");
+  }
+}
+
 async function readJson(request) {
+  const declaredLength = Number(request.headers["content-length"]);
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BODY_BYTES) {
+    throw new RequestError(413, "request_too_large");
+  }
+
   const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > MAX_REQUEST_BODY_BYTES) throw new RequestError(413, "request_too_large");
+    chunks.push(chunk);
+  }
   if (chunks.length === 0) return {};
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new RequestError(400, "invalid_json");
+  }
 }
 
 export function createNodeAgent({ descriptor, handlers = {} }) {
@@ -30,6 +61,7 @@ export function createNodeAgent({ descriptor, handlers = {} }) {
         return json(reply, 200, node);
       }
       if (request.method === "POST" && request.url === "/invoke") {
+        requireJsonContentType(request);
         const body = await readJson(request);
         if (typeof body.capability !== "string" || body.capability.trim() === "") {
           return json(reply, 400, { error: "invalid_capability" });
@@ -46,10 +78,8 @@ export function createNodeAgent({ descriptor, handlers = {} }) {
       }
       return json(reply, 404, { error: "not_found" });
     } catch (error) {
-      return json(reply, 500, {
-        error: "node_agent_error",
-        message: error instanceof Error ? error.message : String(error),
-      });
+      if (error instanceof RequestError) return json(reply, error.status, { error: error.code });
+      return json(reply, 500, { error: "node_agent_error" });
     }
   });
 }
