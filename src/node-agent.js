@@ -9,9 +9,11 @@ const DEFAULT_MAX_CONCURRENT_INVOCATIONS = 8;
 const DEFAULT_HEADERS_TIMEOUT_MS = 5_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_KEEP_ALIVE_TIMEOUT_MS = 5_000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
 const DEFAULT_CLIENT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLIENT_MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_CLIENT_REQUEST_BODY_BYTES = MAX_REQUEST_BODY_BYTES;
+const shutdownPromises = new WeakMap();
 
 class RequestError extends Error {
   constructor(status, code) {
@@ -262,9 +264,31 @@ export async function listenNodeAgent(server, { host = "127.0.0.1", port = 0 } =
   return { host: listenerHost, port: address.port, url: `http://${listenerHost}:${address.port}` };
 }
 
-export async function closeNodeAgent(server) {
+export async function closeNodeAgent(
+  server,
+  { shutdownTimeoutMs = DEFAULT_SHUTDOWN_TIMEOUT_MS } = {},
+) {
+  const shutdownLifetimeMs = requirePositiveLimit(shutdownTimeoutMs, "shutdownTimeoutMs");
+  const existingShutdown = shutdownPromises.get(server);
+  if (existingShutdown) return existingShutdown;
   if (!server.listening) return;
-  await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+
+  const shutdown = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      server.closeAllConnections();
+    }, shutdownLifetimeMs);
+
+    server.close((error) => {
+      clearTimeout(timer);
+      if (error && error.code !== "ERR_SERVER_NOT_RUNNING") reject(error);
+      else resolve();
+    });
+  }).finally(() => {
+    shutdownPromises.delete(server);
+  });
+
+  shutdownPromises.set(server, shutdown);
+  return shutdown;
 }
 
 function clientError(code, message, status) {
