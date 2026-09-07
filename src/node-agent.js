@@ -77,8 +77,8 @@ async function invokeWithDeadline(handler, input, node, timeoutMs) {
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => {
-      controller.abort();
       reject(new RequestError(504, "capability_timeout"));
+      controller.abort();
     }, timeoutMs);
   });
   try {
