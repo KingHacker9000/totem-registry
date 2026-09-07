@@ -2,6 +2,8 @@ import http from "node:http";
 import { createNodeDescriptor } from "./node-protocol.js";
 
 const MAX_REQUEST_BODY_BYTES = 64 * 1024;
+const DEFAULT_HANDLER_TIMEOUT_MS = 5_000;
+const DEFAULT_SERVER_MAX_RESPONSE_BYTES = 64 * 1024;
 const DEFAULT_CLIENT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLIENT_MAX_RESPONSE_BYTES = 64 * 1024;
 
@@ -13,11 +15,26 @@ class RequestError extends Error {
   }
 }
 
-function json(reply, statusCode, body) {
-  const payload = JSON.stringify(body);
+function serializeJson(body, { maxBytes, invalidCode, tooLargeCode } = {}) {
+  let payload;
+  try {
+    payload = JSON.stringify(body);
+  } catch {
+    if (invalidCode) throw new RequestError(500, invalidCode);
+    throw new RequestError(500, "node_agent_error");
+  }
+  const bytes = Buffer.byteLength(payload);
+  if (maxBytes !== undefined && bytes > maxBytes) {
+    throw new RequestError(500, tooLargeCode ?? "node_agent_response_too_large");
+  }
+  return { payload, bytes };
+}
+
+function json(reply, statusCode, body, options) {
+  const { payload, bytes } = serializeJson(body, options);
   reply.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
-    "content-length": Buffer.byteLength(payload),
+    "content-length": bytes,
   });
   reply.end(payload);
 }
@@ -50,9 +67,37 @@ async function readJson(request) {
   }
 }
 
-export function createNodeAgent({ descriptor, handlers = {} }) {
+function requirePositiveLimit(value, name) {
+  if (!Number.isFinite(value) || value <= 0) throw new TypeError(`${name} must be a positive finite number`);
+  return value;
+}
+
+async function invokeWithDeadline(handler, input, node, timeoutMs) {
+  const controller = new AbortController();
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new RequestError(504, "capability_timeout"));
+      controller.abort();
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([handler(input, { node, signal: controller.signal }), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function createNodeAgent({
+  descriptor,
+  handlers = {},
+  handlerTimeoutMs = DEFAULT_HANDLER_TIMEOUT_MS,
+  maxResponseBytes = DEFAULT_SERVER_MAX_RESPONSE_BYTES,
+}) {
   const node = createNodeDescriptor(descriptor);
   const capabilities = new Map(Object.entries(handlers));
+  const executionTimeoutMs = requirePositiveLimit(handlerTimeoutMs, "handlerTimeoutMs");
+  const responseByteLimit = requirePositiveLimit(maxResponseBytes, "maxResponseBytes");
 
   return http.createServer(async (request, reply) => {
     try {
@@ -75,8 +120,12 @@ export function createNodeAgent({ descriptor, handlers = {} }) {
         if (!handler) {
           return json(reply, 501, { error: "capability_not_implemented" });
         }
-        const result = await handler(body.input ?? {}, { node });
-        return json(reply, 200, { nodeId: node.id, capability: body.capability, result });
+        const result = await invokeWithDeadline(handler, body.input ?? {}, node, executionTimeoutMs);
+        return json(reply, 200, { nodeId: node.id, capability: body.capability, result }, {
+          maxBytes: responseByteLimit,
+          invalidCode: "capability_output_invalid",
+          tooLargeCode: "capability_output_too_large",
+        });
       }
       return json(reply, 404, { error: "not_found" });
     } catch (error) {
