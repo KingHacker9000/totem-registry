@@ -186,12 +186,18 @@ export function planInstall({ installed, candidate, grantedPermissions = [] }) {
 
 function validateRollbackPackage(value, name) {
   assertObject(value, name);
-  assertKnownFields(value, new Set(["id", "kind", "version"]), name);
+  assertKnownFields(value, PACKAGE_FIELDS, name);
   assertString(value.id, `${name}.id`);
   assertString(value.kind, `${name}.kind`);
   if (!PACKAGE_KINDS.has(value.kind)) throw new TypeError(`unsupported kind '${value.kind}'`);
   assertString(value.version, `${name}.version`);
-  return Object.freeze({ id: value.id, kind: value.kind, version: value.version });
+
+  const hasArtifactMetadata = ["source", "sha256", "compatibility", "permissions"].some((field) => value[field] !== undefined);
+  if (!hasArtifactMetadata) return Object.freeze({ id: value.id, kind: value.kind, version: value.version });
+  if (value.source === undefined || value.sha256 === undefined) {
+    throw new TypeError(`${name} artifact metadata requires source and sha256`);
+  }
+  return validatePackageVersion(value);
 }
 
 export function validateRollbackRecord(record) {
