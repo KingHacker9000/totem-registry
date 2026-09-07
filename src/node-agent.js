@@ -2,6 +2,7 @@ import http from "node:http";
 import { createNodeDescriptor } from "./node-protocol.js";
 
 const MAX_REQUEST_BODY_BYTES = 64 * 1024;
+const DEFAULT_REQUEST_BODY_TIMEOUT_MS = 5_000;
 const DEFAULT_HANDLER_TIMEOUT_MS = 5_000;
 const DEFAULT_SERVER_MAX_RESPONSE_BYTES = 64 * 1024;
 const DEFAULT_CLIENT_TIMEOUT_MS = 5_000;
@@ -47,25 +48,67 @@ function requireJsonContentType(request) {
   }
 }
 
-async function readJson(request) {
+function readJson(request, timeoutMs) {
   const declaredLength = Number(request.headers["content-length"]);
   if (Number.isFinite(declaredLength) && declaredLength > MAX_REQUEST_BODY_BYTES) {
     throw new RequestError(413, "request_too_large");
   }
 
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of request) {
-    size += chunk.length;
-    if (size > MAX_REQUEST_BODY_BYTES) throw new RequestError(413, "request_too_large");
-    chunks.push(chunk);
-  }
-  if (chunks.length === 0) return {};
-  try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  } catch {
-    throw new RequestError(400, "invalid_json");
-  }
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      request.off("data", onData);
+      request.off("end", onEnd);
+      request.off("error", onError);
+      request.off("aborted", onAborted);
+    };
+
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve(value);
+    };
+
+    const onData = (chunk) => {
+      size += chunk.length;
+      if (size > MAX_REQUEST_BODY_BYTES) {
+        finish(new RequestError(413, "request_too_large"));
+        request.resume();
+        return;
+      }
+      chunks.push(chunk);
+    };
+
+    const onEnd = () => {
+      if (chunks.length === 0) {
+        finish(null, {});
+        return;
+      }
+      try {
+        finish(null, JSON.parse(Buffer.concat(chunks).toString("utf8")));
+      } catch {
+        finish(new RequestError(400, "invalid_json"));
+      }
+    };
+
+    const onError = () => finish(new RequestError(400, "request_aborted"));
+    const onAborted = () => finish(new RequestError(400, "request_aborted"));
+    const timer = setTimeout(() => {
+      finish(new RequestError(408, "request_body_timeout"));
+      request.resume();
+    }, timeoutMs);
+
+    request.on("data", onData);
+    request.once("end", onEnd);
+    request.once("error", onError);
+    request.once("aborted", onAborted);
+  });
 }
 
 function requirePositiveLimit(value, name) {
@@ -122,11 +165,13 @@ async function invokeWithDeadline(handler, input, node, timeoutMs) {
 export function createNodeAgent({
   descriptor,
   handlers = {},
+  requestBodyTimeoutMs = DEFAULT_REQUEST_BODY_TIMEOUT_MS,
   handlerTimeoutMs = DEFAULT_HANDLER_TIMEOUT_MS,
   maxResponseBytes = DEFAULT_SERVER_MAX_RESPONSE_BYTES,
 }) {
   const node = createNodeDescriptor(descriptor);
   const capabilities = new Map(Object.entries(handlers));
+  const bodyTimeoutMs = requirePositiveLimit(requestBodyTimeoutMs, "requestBodyTimeoutMs");
   const executionTimeoutMs = requirePositiveLimit(handlerTimeoutMs, "handlerTimeoutMs");
   const responseByteLimit = requirePositiveLimit(maxResponseBytes, "maxResponseBytes");
 
@@ -140,7 +185,7 @@ export function createNodeAgent({
       }
       if (request.method === "POST" && request.url === "/invoke") {
         requireJsonContentType(request);
-        const body = await readJson(request);
+        const body = await readJson(request, bodyTimeoutMs);
         if (typeof body.capability !== "string" || body.capability.trim() === "") {
           return json(reply, 400, { error: "invalid_capability" });
         }
@@ -160,7 +205,10 @@ export function createNodeAgent({
       }
       return json(reply, 404, { error: "not_found" });
     } catch (error) {
-      if (error instanceof RequestError) return json(reply, error.status, { error: error.code });
+      if (error instanceof RequestError) {
+        if (error.code === "request_body_timeout") reply.shouldKeepAlive = false;
+        return json(reply, error.status, { error: error.code });
+      }
       return json(reply, 500, { error: "node_agent_error" });
     }
   });
