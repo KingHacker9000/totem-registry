@@ -28,6 +28,18 @@ function packageFixture(overrides = {}) {
   };
 }
 
+function rollbackPackageFixture(version) {
+  return {
+    id: "clock",
+    kind: "extension",
+    version,
+    source: `https://example.invalid/clock-${version}.tgz`,
+    sha256: sha256Hex(Buffer.from(`clock-${version}`)),
+    compatibility: { totem: ">=0.1.0" },
+    permissions: ["clock.read"],
+  };
+}
+
 test("registry index signs and verifies with an explicitly trusted Ed25519 key", () => {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
   const index = createRegistryIndex({
@@ -120,13 +132,14 @@ test("artifact integrity and install planning never auto-grant permissions", () 
   );
 });
 
-test("rollback records restore the exact previous package identity", () => {
-  const previous = { id: "clock", kind: "extension", version: "1.0.0" };
-  const installed = { id: "clock", kind: "extension", version: "1.1.0" };
+test("rollback records restore the exact validated previous package metadata", () => {
+  const previous = rollbackPackageFixture("1.0.0");
+  const installed = rollbackPackageFixture("1.1.0");
   const record = createRollbackRecord(previous, installed);
   assert.equal(record.fromVersion, "1.1.0");
   assert.equal(record.toVersion, "1.0.0");
   assert.deepEqual(applyRollback(record), previous);
+  assert.equal(Object.isFrozen(record.previous.permissions), true);
 });
 
 test("rollback application fails closed on inconsistent or malformed records", () => {
@@ -143,7 +156,7 @@ test("rollback application fails closed on inconsistent or malformed records", (
   assert.throws(() => applyRollback({ ...valid, toVersion: "0.9.0" }), /toVersion does not match/);
   assert.throws(() => validateRollbackRecord({ ...valid, unexpected: true }), /unsupported field 'unexpected'/);
   assert.throws(
-    () => createRollbackRecord(null, { id: "clock", kind: "extension", version: "1.1.0", source: "unexpected" }),
-    /unsupported field 'source'/,
+    () => createRollbackRecord(null, { id: "clock", kind: "extension", version: "1.1.0", source: "https://example.invalid/clock.tgz" }),
+    /requires source and sha256/,
   );
 });
