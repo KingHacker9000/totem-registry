@@ -81,6 +81,6 @@ test("node envelopes reject unsupported lifecycle events and malformed timestamp
   assert.throws(() => createNodeEnvelope({ ...base, type: "node.heartbeat", payload: [] }), /payload must be an object/);
   assert.throws(
     () => createNodeEnvelope({ ...base, type: "node.heartbeat", payload: { metric: undefined } }),
-    /payload.metric must contain only finite JSON values/,
+    /payload.metric must be an object/,
   );
 });
