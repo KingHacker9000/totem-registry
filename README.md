@@ -42,6 +42,8 @@ A node descriptor contains platform/architecture, tags, online state, and an exp
 - deterministic workflow routing to an eligible online node;
 - reducer semantics for durable node state.
 
+The public node boundary fails closed on ambiguous state. `online` is strictly boolean, optional `lastSeenAt` and envelope `occurredAt` values must be UTC ISO-8601 timestamps, metadata/payload values must be plain JSON-safe structures without circular references or prototype-sensitive keys, and only the four documented lifecycle event types are accepted. Unsupported events cannot silently pass through reducer state.
+
 The protocol is intentionally authorization-neutral: advertising `shell` does not itself authorize a workflow. Totem's caller policy and permission model must still approve use of that capability.
 
 ## Security model

@@ -1,5 +1,9 @@
 export const NODE_PROTOCOL_SCHEMA = "totem.node/v0";
 
+const NODE_EVENT_TYPES = new Set(["node.registered", "node.updated", "node.heartbeat", "node.offline"]);
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+const FORBIDDEN_OBJECT_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+
 function nonEmptyString(value, name) {
   if (typeof value !== "string" || value.trim() === "") throw new TypeError(`${name} must be a non-empty string`);
 }
@@ -11,14 +15,62 @@ function stringArray(value, name) {
   return [...new Set(value)].sort();
 }
 
+function plainObject(value, name) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new TypeError(`${name} must be an object`);
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new TypeError(`${name} must be a plain object`);
+}
+
+function timestamp(value, name, { nullable = false } = {}) {
+  if (nullable && value === null) return;
+  nonEmptyString(value, name);
+  if (!ISO_TIMESTAMP.test(value) || Number.isNaN(Date.parse(value))) {
+    throw new TypeError(`${name} must be an ISO-8601 UTC timestamp`);
+  }
+}
+
+function jsonValue(value, name, seen = new Set()) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new TypeError(`${name} must contain only finite JSON values`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (seen.has(value)) throw new TypeError(`${name} must not contain circular references`);
+    seen.add(value);
+    value.forEach((item, index) => jsonValue(item, `${name}[${index}]`, seen));
+    seen.delete(value);
+    return;
+  }
+  plainObject(value, name);
+  if (seen.has(value)) throw new TypeError(`${name} must not contain circular references`);
+  seen.add(value);
+  for (const [key, item] of Object.entries(value)) {
+    if (FORBIDDEN_OBJECT_KEYS.has(key)) throw new TypeError(`${name} contains unsafe key '${key}'`);
+    jsonValue(item, `${name}.${key}`, seen);
+  }
+  seen.delete(value);
+}
+
+function metadataObject(value) {
+  plainObject(value, "metadata");
+  jsonValue(value, "metadata");
+}
+
 export function createNodeDescriptor(input) {
-  if (!input || typeof input !== "object" || Array.isArray(input)) throw new TypeError("node descriptor must be an object");
+  plainObject(input, "node descriptor");
   nonEmptyString(input.id, "id");
   nonEmptyString(input.name, "name");
   nonEmptyString(input.platform, "platform");
   nonEmptyString(input.arch, "arch");
   const capabilities = stringArray(input.capabilities ?? [], "capabilities");
   const tags = stringArray(input.tags ?? [], "tags");
+  const online = input.online ?? true;
+  if (typeof online !== "boolean") throw new TypeError("online must be a boolean");
+  const lastSeenAt = input.lastSeenAt ?? null;
+  timestamp(lastSeenAt, "lastSeenAt", { nullable: true });
+  const metadata = input.metadata ?? {};
+  metadataObject(metadata);
   return {
     schema: NODE_PROTOCOL_SCHEMA,
     id: input.id,
@@ -27,22 +79,22 @@ export function createNodeDescriptor(input) {
     arch: input.arch,
     capabilities,
     tags,
-    online: input.online ?? true,
-    lastSeenAt: input.lastSeenAt ?? null,
-    metadata: input.metadata ?? {},
+    online,
+    lastSeenAt,
+    metadata,
   };
 }
 
 export function validateNodeEnvelope(envelope) {
-  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) throw new TypeError("node envelope must be an object");
+  plainObject(envelope, "node envelope");
   if (envelope.schema !== NODE_PROTOCOL_SCHEMA) throw new TypeError("unsupported node protocol schema");
   nonEmptyString(envelope.type, "type");
+  if (!NODE_EVENT_TYPES.has(envelope.type)) throw new TypeError(`unsupported node event type '${envelope.type}'`);
   nonEmptyString(envelope.nodeId, "nodeId");
   nonEmptyString(envelope.id, "id");
-  nonEmptyString(envelope.occurredAt, "occurredAt");
-  if (!envelope.payload || typeof envelope.payload !== "object" || Array.isArray(envelope.payload)) {
-    throw new TypeError("payload must be an object");
-  }
+  timestamp(envelope.occurredAt, "occurredAt");
+  plainObject(envelope.payload, "payload");
+  jsonValue(envelope.payload, "payload");
   return envelope;
 }
 
@@ -80,5 +132,5 @@ export function reduceNodeState(current, envelope) {
     if (!current) throw new TypeError("offline requires an existing node");
     return { ...current, online: false, lastSeenAt: envelope.occurredAt };
   }
-  return current;
+  throw new TypeError(`unsupported node event type '${envelope.type}'`);
 }
