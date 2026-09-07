@@ -73,6 +73,36 @@ function requirePositiveLimit(value, name) {
   return value;
 }
 
+function requireListenerHost(host) {
+  if (typeof host !== "string" || host.trim() === "" || host !== host.trim()) {
+    throw new TypeError("host must be a non-empty trimmed string");
+  }
+  return host;
+}
+
+function requireListenerPort(port) {
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    throw new TypeError("port must be an integer between 0 and 65535");
+  }
+  return port;
+}
+
+function requireClientBaseUrl(baseUrl) {
+  let url;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    throw new TypeError("baseUrl must be a valid HTTP(S) URL");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new TypeError("baseUrl must use http or https");
+  }
+  if (url.username !== "" || url.password !== "") {
+    throw new TypeError("baseUrl must not contain embedded credentials");
+  }
+  return url;
+}
+
 async function invokeWithDeadline(handler, input, node, timeoutMs) {
   const controller = new AbortController();
   let timer;
@@ -137,13 +167,15 @@ export function createNodeAgent({
 }
 
 export async function listenNodeAgent(server, { host = "127.0.0.1", port = 0 } = {}) {
+  const listenerHost = requireListenerHost(host);
+  const listenerPort = requireListenerPort(port);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, host, resolve);
+    server.listen(listenerPort, listenerHost, resolve);
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("node agent did not bind a TCP address");
-  return { host, port: address.port, url: `http://${host}:${address.port}` };
+  return { host: listenerHost, port: address.port, url: `http://${listenerHost}:${address.port}` };
 }
 
 export async function closeNodeAgent(server) {
@@ -219,10 +251,11 @@ export class NodeAgentClient {
       maxResponseBytes = DEFAULT_CLIENT_MAX_RESPONSE_BYTES,
     } = {},
   ) {
-    this.baseUrl = new URL(baseUrl);
+    if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl must be a function");
+    this.baseUrl = requireClientBaseUrl(baseUrl);
     this.fetch = fetchImpl;
-    this.timeoutMs = timeoutMs;
-    this.maxResponseBytes = maxResponseBytes;
+    this.timeoutMs = requirePositiveLimit(timeoutMs, "timeoutMs");
+    this.maxResponseBytes = requirePositiveLimit(maxResponseBytes, "maxResponseBytes");
   }
 
   async #json(path, init = {}) {
