@@ -105,3 +105,71 @@ test("node agent does not expose internal handler exception details", async () =
     assert.equal(JSON.stringify(body).includes("private handler detail"), false);
   });
 });
+
+test("node agent client times out deterministically", async () => {
+  const client = new NodeAgentClient("http://127.0.0.1:1", {
+    fetchImpl: async () => new Promise(() => {}),
+    timeoutMs: 10,
+  });
+
+  await assert.rejects(client.health(), (error) => {
+    assert.equal(error.code, "node_agent_timeout");
+    assert.equal(error.status, undefined);
+    return true;
+  });
+});
+
+test("node agent client rejects unsupported and malformed response bodies", async () => {
+  const wrongType = new NodeAgentClient("http://127.0.0.1:1", {
+    fetchImpl: async () => new Response("not json", { status: 200, headers: { "content-type": "text/plain" } }),
+  });
+  await assert.rejects(wrongType.health(), (error) => {
+    assert.equal(error.code, "node_agent_unsupported_media_type");
+    assert.equal(error.status, 200);
+    return true;
+  });
+
+  const malformed = new NodeAgentClient("http://127.0.0.1:1", {
+    fetchImpl: async () => new Response("{", { status: 200, headers: { "content-type": "application/json" } }),
+  });
+  await assert.rejects(malformed.health(), (error) => {
+    assert.equal(error.code, "node_agent_invalid_json");
+    assert.equal(error.status, 200);
+    return true;
+  });
+});
+
+test("node agent client rejects oversized responses before parsing", async () => {
+  const payload = JSON.stringify({ value: "x".repeat(128) });
+  const client = new NodeAgentClient("http://127.0.0.1:1", {
+    fetchImpl: async () =>
+      new Response(payload, {
+        status: 200,
+        headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(payload)) },
+      }),
+    maxResponseBytes: 64,
+  });
+
+  await assert.rejects(client.health(), (error) => {
+    assert.equal(error.code, "node_agent_response_too_large");
+    assert.equal(error.status, 200);
+    return true;
+  });
+});
+
+test("node agent client preserves structured HTTP error status and code", async () => {
+  const client = new NodeAgentClient("http://127.0.0.1:1", {
+    fetchImpl: async () =>
+      new Response(JSON.stringify({ error: "remote_failure" }), {
+        status: 503,
+        headers: { "content-type": "application/json" },
+      }),
+  });
+
+  await assert.rejects(client.health(), (error) => {
+    assert.equal(error.status, 503);
+    assert.equal(error.code, "remote_failure");
+    assert.equal(error.message, "remote_failure");
+    return true;
+  });
+});
