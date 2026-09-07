@@ -7,7 +7,7 @@
     "node": ">=22.20.0"
   },
   "scripts": {
-    "check": "node --check src/registry.js && node --check src/node-protocol.js && node --check src/node-agent.js && node --check tools/trust-fixture.js && node --check tools/distribution-inventory.js && node tools/distribution-inventory.js > /dev/null && node --test",
+    "check": "node --check src/registry.js && node --check src/node-protocol.js && node --check src/node-agent.js && node --check tools/trust-fixture.js && node --check tools/distribution-inventory.js && node tools/distribution-inventory.js && node --test",
     "test": "node --test",
     "trust-fixture": "node tools/trust-fixture.js",
     "distribution-inventory": "node tools/distribution-inventory.js"
