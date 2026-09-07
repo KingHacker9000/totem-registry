@@ -53,6 +53,40 @@ test("node agent client accepts only credential-free HTTP(S) endpoints", () => {
   assert.doesNotThrow(() => new NodeAgentClient("https://registry.example"));
 });
 
+test("node agent server has deterministic bounded HTTP connection lifetimes", () => {
+  const server = createNodeAgent({ descriptor: descriptor("node-http-limits-default") });
+  assert.equal(server.headersTimeout, 5_000);
+  assert.equal(server.requestTimeout, 10_000);
+  assert.equal(server.keepAliveTimeout, 5_000);
+});
+
+test("node agent server accepts explicit positive HTTP connection lifetime bounds", () => {
+  const server = createNodeAgent({
+    descriptor: descriptor("node-http-limits-custom"),
+    headersTimeoutMs: 2_500,
+    requestTimeoutMs: 7_500,
+    keepAliveTimeoutMs: 1_250,
+  });
+  assert.equal(server.headersTimeout, 2_500);
+  assert.equal(server.requestTimeout, 7_500);
+  assert.equal(server.keepAliveTimeout, 1_250);
+});
+
+test("node agent server rejects invalid HTTP connection lifetime bounds", () => {
+  for (const [name, option] of [
+    ["headersTimeoutMs", "headersTimeoutMs"],
+    ["requestTimeoutMs", "requestTimeoutMs"],
+    ["keepAliveTimeoutMs", "keepAliveTimeoutMs"],
+  ]) {
+    for (const value of [0, -1, Number.POSITIVE_INFINITY, Number.NaN]) {
+      assert.throws(
+        () => createNodeAgent({ descriptor: descriptor(`${name}-${String(value)}`), [option]: value }),
+        new RegExp(`${name} must be a positive finite number`),
+      );
+    }
+  }
+});
+
 test("node agent listener rejects invalid host and port deterministically", async () => {
   for (const host of ["", "   ", " 127.0.0.1", null]) {
     const server = createNodeAgent({ descriptor: descriptor(`host-${String(host)}`) });

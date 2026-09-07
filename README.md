@@ -44,6 +44,8 @@ A node descriptor contains platform/architecture, tags, online state, and an exp
 
 The public node boundary fails closed on ambiguous state. `online` is strictly boolean, optional `lastSeenAt` and envelope `occurredAt` values must be UTC ISO-8601 timestamps, metadata/payload values must be plain JSON-safe structures without circular references or prototype-sensitive keys, and only the four documented lifecycle event types are accepted. Unsupported events cannot silently pass through reducer state.
 
+The node-agent HTTP server also applies explicit finite connection/request lifetime limits before capability dispatch: headers default to 5 seconds, full request receipt to 10 seconds, and idle keep-alive to 5 seconds. These values are configurable through validated positive `headersTimeoutMs`, `requestTimeoutMs`, and `keepAliveTimeoutMs` options; body ingestion and capability execution retain their separate deadlines.
+
 The protocol is intentionally authorization-neutral: advertising `shell` does not itself authorize a workflow. Totem's caller policy and permission model must still approve use of that capability.
 
 ## Security model

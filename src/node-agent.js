@@ -6,6 +6,9 @@ const DEFAULT_REQUEST_BODY_TIMEOUT_MS = 5_000;
 const DEFAULT_HANDLER_TIMEOUT_MS = 5_000;
 const DEFAULT_SERVER_MAX_RESPONSE_BYTES = 64 * 1024;
 const DEFAULT_MAX_CONCURRENT_INVOCATIONS = 8;
+const DEFAULT_HEADERS_TIMEOUT_MS = 5_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const DEFAULT_KEEP_ALIVE_TIMEOUT_MS = 5_000;
 const DEFAULT_CLIENT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLIENT_MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_CLIENT_REQUEST_BODY_BYTES = MAX_REQUEST_BODY_BYTES;
@@ -175,6 +178,9 @@ export function createNodeAgent({
   handlerTimeoutMs = DEFAULT_HANDLER_TIMEOUT_MS,
   maxResponseBytes = DEFAULT_SERVER_MAX_RESPONSE_BYTES,
   maxConcurrentInvocations = DEFAULT_MAX_CONCURRENT_INVOCATIONS,
+  headersTimeoutMs = DEFAULT_HEADERS_TIMEOUT_MS,
+  requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+  keepAliveTimeoutMs = DEFAULT_KEEP_ALIVE_TIMEOUT_MS,
 }) {
   const node = createNodeDescriptor(descriptor);
   const capabilities = new Map(Object.entries(handlers));
@@ -182,9 +188,12 @@ export function createNodeAgent({
   const executionTimeoutMs = requirePositiveLimit(handlerTimeoutMs, "handlerTimeoutMs");
   const responseByteLimit = requirePositiveLimit(maxResponseBytes, "maxResponseBytes");
   const invocationLimit = requirePositiveInteger(maxConcurrentInvocations, "maxConcurrentInvocations");
+  const headerTimeoutMs = requirePositiveLimit(headersTimeoutMs, "headersTimeoutMs");
+  const requestLifetimeMs = requirePositiveLimit(requestTimeoutMs, "requestTimeoutMs");
+  const keepAliveLifetimeMs = requirePositiveLimit(keepAliveTimeoutMs, "keepAliveTimeoutMs");
   let activeInvocations = 0;
 
-  return http.createServer(async (request, reply) => {
+  const server = http.createServer(async (request, reply) => {
     try {
       if (request.method === "GET" && request.url === "/health") {
         return json(reply, 200, { status: "ok", nodeId: node.id });
@@ -234,6 +243,11 @@ export function createNodeAgent({
       return json(reply, 500, { error: "node_agent_error" });
     }
   });
+
+  server.headersTimeout = headerTimeoutMs;
+  server.requestTimeout = requestLifetimeMs;
+  server.keepAliveTimeout = keepAliveLifetimeMs;
+  return server;
 }
 
 export async function listenNodeAgent(server, { host = "127.0.0.1", port = 0 } = {}) {
