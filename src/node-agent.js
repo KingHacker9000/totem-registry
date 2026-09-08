@@ -389,8 +389,12 @@ export class NodeAgentClient {
       const request = (async () => {
         const response = await this.fetch(new URL(path, this.baseUrl), {
           ...init,
+          redirect: "manual",
           signal: controller.signal,
         });
+        if (response.status >= 300 && response.status < 400) {
+          throw clientError("node_agent_redirect", "node agent redirect rejected", response.status);
+        }
         const body = await readBoundedResponseJson(response, this.maxResponseBytes);
         return { response, body };
       })();
