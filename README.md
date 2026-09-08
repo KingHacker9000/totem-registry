@@ -19,6 +19,8 @@ The v0 registry boundary fails closed on ambiguous metadata rather than silently
 - validated package/index structures are copied and frozen before signing or install planning;
 - rollback records are validated for package identity and version consistency before application.
 
+Externally supplied registry metadata also has deterministic structural limits before signing or verification: at most 2,048 package versions per index, at most 128 permissions per package/install grant set, and at most 4,096 UTF-16 code units per accepted string field. These values are exported as `REGISTRY_LIMITS` so tests and consumers can reason about the trust boundary without duplicating magic numbers.
+
 The helper APIs deliberately separate **discovery** from **authorization**:
 
 - `createRegistryIndex()` validates and deterministically orders metadata.
@@ -43,6 +45,8 @@ A node descriptor contains platform/architecture, tags, online state, and an exp
 - reducer semantics for durable node state.
 
 The public node boundary fails closed on ambiguous state. `online` is strictly boolean, optional `lastSeenAt` and envelope `occurredAt` values must be UTC ISO-8601 timestamps, metadata/payload values must be plain JSON-safe structures without circular references or prototype-sensitive keys, and only the four documented lifecycle event types are accepted. Unsupported events cannot silently pass through reducer state.
+
+Node protocol inputs also have exported deterministic structural bounds via `NODE_PROTOCOL_LIMITS`: strings are capped at 4,096 code units, capability/tag arrays at 256 items, nested JSON at depth 24, aggregate JSON members at 4,096, any one JSON array at 1,024 items, any one JSON object at 1,024 keys, and workflow routing fan-out at 2,048 nodes. Validation fails before recursively traversing beyond those limits, bounding attacker-controlled protocol work while preserving normal payloads.
 
 The node-agent HTTP server applies explicit finite connection/request lifetime limits before capability dispatch: headers default to 5 seconds, full request receipt to 10 seconds, and idle keep-alive to 5 seconds. These values are configurable through validated positive `headersTimeoutMs`, `requestTimeoutMs`, and `keepAliveTimeoutMs` options; body ingestion and capability execution retain their separate deadlines. `closeNodeAgent()` also uses a validated positive shutdown deadline (5 seconds by default): normal in-flight work gets a graceful drain window, then any connections still preventing shutdown are force-closed so teardown cannot wait indefinitely. Repeated/concurrent close calls share the same shutdown operation.
 
