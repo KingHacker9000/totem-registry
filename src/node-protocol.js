@@ -1,16 +1,33 @@
 export const NODE_PROTOCOL_SCHEMA = "totem.node/v0";
 
+export const NODE_PROTOCOL_LIMITS = Object.freeze({
+  maxStringLength: 4096,
+  maxStringArrayItems: 256,
+  maxJsonDepth: 24,
+  maxJsonMembers: 4096,
+  maxJsonArrayItems: 1024,
+  maxJsonObjectKeys: 1024,
+  maxRouteNodes: 2048,
+});
+
 const NODE_EVENT_TYPES = new Set(["node.registered", "node.updated", "node.heartbeat", "node.offline"]);
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
 const FORBIDDEN_OBJECT_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 
 function nonEmptyString(value, name) {
   if (typeof value !== "string" || value.trim() === "") throw new TypeError(`${name} must be a non-empty string`);
+  if (value.length > NODE_PROTOCOL_LIMITS.maxStringLength) {
+    throw new TypeError(`${name} exceeds maximum length of ${NODE_PROTOCOL_LIMITS.maxStringLength}`);
+  }
 }
 
 function stringArray(value, name) {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.trim() === "")) {
-    throw new TypeError(`${name} must be an array of non-empty strings`);
+  if (!Array.isArray(value)) throw new TypeError(`${name} must be an array of non-empty strings`);
+  if (value.length > NODE_PROTOCOL_LIMITS.maxStringArrayItems) {
+    throw new TypeError(`${name} exceeds maximum item count of ${NODE_PROTOCOL_LIMITS.maxStringArrayItems}`);
+  }
+  for (const item of value) {
+    nonEmptyString(item, `${name} item`);
   }
   return [...new Set(value)].sort();
 }
@@ -29,25 +46,52 @@ function timestamp(value, name, { nullable = false } = {}) {
   }
 }
 
-function jsonValue(value, name, seen = new Set()) {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+function jsonValue(value, name, state = { members: 0 }, depth = 0, seen = new Set()) {
+  if (depth > NODE_PROTOCOL_LIMITS.maxJsonDepth) {
+    throw new TypeError(`${name} exceeds maximum JSON depth of ${NODE_PROTOCOL_LIMITS.maxJsonDepth}`);
+  }
+  if (value === null || typeof value === "boolean") return;
+  if (typeof value === "string") {
+    if (value.length > NODE_PROTOCOL_LIMITS.maxStringLength) {
+      throw new TypeError(`${name} contains a string exceeding maximum length of ${NODE_PROTOCOL_LIMITS.maxStringLength}`);
+    }
+    return;
+  }
   if (typeof value === "number") {
     if (!Number.isFinite(value)) throw new TypeError(`${name} must contain only finite JSON values`);
     return;
   }
   if (Array.isArray(value)) {
+    if (value.length > NODE_PROTOCOL_LIMITS.maxJsonArrayItems) {
+      throw new TypeError(`${name} exceeds maximum array length of ${NODE_PROTOCOL_LIMITS.maxJsonArrayItems}`);
+    }
     if (seen.has(value)) throw new TypeError(`${name} must not contain circular references`);
+    state.members += value.length;
+    if (state.members > NODE_PROTOCOL_LIMITS.maxJsonMembers) {
+      throw new TypeError(`${name} exceeds maximum JSON member count of ${NODE_PROTOCOL_LIMITS.maxJsonMembers}`);
+    }
     seen.add(value);
-    value.forEach((item, index) => jsonValue(item, `${name}[${index}]`, seen));
+    value.forEach((item, index) => jsonValue(item, `${name}[${index}]`, state, depth + 1, seen));
     seen.delete(value);
     return;
   }
   plainObject(value, name);
+  const entries = Object.entries(value);
+  if (entries.length > NODE_PROTOCOL_LIMITS.maxJsonObjectKeys) {
+    throw new TypeError(`${name} exceeds maximum object key count of ${NODE_PROTOCOL_LIMITS.maxJsonObjectKeys}`);
+  }
   if (seen.has(value)) throw new TypeError(`${name} must not contain circular references`);
+  state.members += entries.length;
+  if (state.members > NODE_PROTOCOL_LIMITS.maxJsonMembers) {
+    throw new TypeError(`${name} exceeds maximum JSON member count of ${NODE_PROTOCOL_LIMITS.maxJsonMembers}`);
+  }
   seen.add(value);
-  for (const [key, item] of Object.entries(value)) {
+  for (const [key, item] of entries) {
     if (FORBIDDEN_OBJECT_KEYS.has(key)) throw new TypeError(`${name} contains unsafe key '${key}'`);
-    jsonValue(item, `${name}.${key}`, seen);
+    if (key.length > NODE_PROTOCOL_LIMITS.maxStringLength) {
+      throw new TypeError(`${name} contains a key exceeding maximum length of ${NODE_PROTOCOL_LIMITS.maxStringLength}`);
+    }
+    jsonValue(item, `${name}.${key}`, state, depth + 1, seen);
   }
   seen.delete(value);
 }
@@ -110,6 +154,10 @@ export function canRunOnNode(node, requiredCapabilities = []) {
 }
 
 export function routeWorkflow(nodes, requiredCapabilities = []) {
+  if (!Array.isArray(nodes)) throw new TypeError("nodes must be an array");
+  if (nodes.length > NODE_PROTOCOL_LIMITS.maxRouteNodes) {
+    throw new TypeError(`nodes exceeds maximum item count of ${NODE_PROTOCOL_LIMITS.maxRouteNodes}`);
+  }
   const candidates = nodes
     .map(createNodeDescriptor)
     .map((node) => ({ node, match: canRunOnNode(node, requiredCapabilities) }))
