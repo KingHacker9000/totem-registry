@@ -12,6 +12,7 @@ const DEFAULT_KEEP_ALIVE_TIMEOUT_MS = 5_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
 const DEFAULT_CLIENT_TIMEOUT_MS = 5_000;
 const DEFAULT_CLIENT_MAX_RESPONSE_BYTES = 64 * 1024;
+const DEFAULT_CLIENT_MAX_CONCURRENT_REQUESTS = 8;
 const MAX_CLIENT_REQUEST_BODY_BYTES = MAX_REQUEST_BODY_BYTES;
 const shutdownPromises = new WeakMap();
 
@@ -357,6 +358,7 @@ export class NodeAgentClient {
       fetchImpl = fetch,
       timeoutMs = DEFAULT_CLIENT_TIMEOUT_MS,
       maxResponseBytes = DEFAULT_CLIENT_MAX_RESPONSE_BYTES,
+      maxConcurrentRequests = DEFAULT_CLIENT_MAX_CONCURRENT_REQUESTS,
     } = {},
   ) {
     if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl must be a function");
@@ -364,9 +366,16 @@ export class NodeAgentClient {
     this.fetch = fetchImpl;
     this.timeoutMs = requirePositiveLimit(timeoutMs, "timeoutMs");
     this.maxResponseBytes = requirePositiveLimit(maxResponseBytes, "maxResponseBytes");
+    this.maxConcurrentRequests = requirePositiveInteger(maxConcurrentRequests, "maxConcurrentRequests");
+    this.activeRequests = 0;
   }
 
   async #json(path, init = {}) {
+    if (this.activeRequests >= this.maxConcurrentRequests) {
+      throw clientError("node_agent_overloaded", "node agent client request limit reached");
+    }
+    this.activeRequests += 1;
+
     const controller = new AbortController();
     let timer;
     const timeout = new Promise((_, reject) => {
@@ -406,6 +415,7 @@ export class NodeAgentClient {
       throw clientError("node_agent_transport_error", "node agent request failed");
     } finally {
       clearTimeout(timer);
+      this.activeRequests -= 1;
     }
   }
 
