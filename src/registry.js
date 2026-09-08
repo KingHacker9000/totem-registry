@@ -3,6 +3,11 @@ import { createHash, createPrivateKey, createPublicKey, sign, verify } from "nod
 export const REGISTRY_SCHEMA = "totem.registry/v0";
 export const ROLLBACK_SCHEMA = "totem.registry.rollback/v0";
 export const PACKAGE_KINDS = new Set(["extension", "theme", "agent-provider", "node-plugin"]);
+export const REGISTRY_LIMITS = Object.freeze({
+  maxPackages: 2048,
+  maxPermissions: 128,
+  maxStringLength: 4096,
+});
 
 const PACKAGE_FIELDS = new Set(["id", "kind", "version", "source", "sha256", "compatibility", "permissions"]);
 const COMPATIBILITY_FIELDS = new Set(["totem"]);
@@ -19,6 +24,9 @@ function assertString(value, name) {
     throw new TypeError(`${name} must be a non-empty string`);
   }
   if (value !== value.trim()) throw new TypeError(`${name} must not contain leading or trailing whitespace`);
+  if (value.length > REGISTRY_LIMITS.maxStringLength) {
+    throw new TypeError(`${name} exceeds maximum length of ${REGISTRY_LIMITS.maxStringLength}`);
+  }
 }
 
 function assertKnownFields(value, allowed, name) {
@@ -49,6 +57,9 @@ function assertArtifactSource(value) {
 
 function validatePermissions(value) {
   if (!Array.isArray(value)) throw new TypeError("permissions must be an array of non-empty strings");
+  if (value.length > REGISTRY_LIMITS.maxPermissions) {
+    throw new TypeError(`permissions exceeds maximum item count of ${REGISTRY_LIMITS.maxPermissions}`);
+  }
   const seen = new Set();
   const permissions = value.map((permission) => {
     assertString(permission, "permission");
@@ -120,6 +131,9 @@ export function validateRegistryIndex(index) {
   if (index.schema !== REGISTRY_SCHEMA) throw new TypeError("unsupported registry schema");
   assertUtcTimestamp(index.generatedAt, "generatedAt");
   if (!Array.isArray(index.packages)) throw new TypeError("packages must be an array");
+  if (index.packages.length > REGISTRY_LIMITS.maxPackages) {
+    throw new TypeError(`packages exceeds maximum item count of ${REGISTRY_LIMITS.maxPackages}`);
+  }
   const packages = index.packages.map(validatePackageVersion);
   const seen = new Set();
   for (const pkg of packages) {
